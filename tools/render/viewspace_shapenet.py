@@ -72,16 +72,21 @@ def cal_pose(angle_x, angle_y, angle_z):
     return t, pose
 
 
+def fibonacci_sphere(n_samples):
+    """Generate n_samples evenly distributed points on a unit sphere using
+    the Fibonacci / golden-angle spiral method."""
+    golden_ratio = (1 + np.sqrt(5)) / 2
+    points = []
+    for i in range(n_samples):
+        theta = 2 * np.pi * i / golden_ratio  # azimuth (golden angle increment)
+        phi = np.arccos(1 - 2 * (i + 0.5) / n_samples)  # elevation (uniform in cos)
+        x = np.sin(phi) * np.cos(theta)
+        y = np.sin(phi) * np.sin(theta)
+        z = np.cos(phi)
+        points.append([x, y, z])
+    return np.array(points)
+
+
 if __name__ == "__main__":
-
-    t_list = []
-
-    for i in range(-90, 45, 30):
-        angle_x = i * np.pi / 180
-        for j in range(0, 360, 45):
-            angle_y = j * np.pi / 180
-            t, _ = cal_pose(angle_x, angle_y, 0)
-            t_list.append(t)
-
-    viewspace = np.hstack(t_list).T
-    np.savetxt("viewspace_shapenet_33.txt", viewspace[7:])  # discard 7 duplicate points
+    viewspace = fibonacci_sphere(33)
+    np.savetxt("viewspace_shapenet_33.txt", viewspace)
