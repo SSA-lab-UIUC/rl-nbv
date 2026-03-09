@@ -13,6 +13,7 @@ dataset:
 environment:
   view_num: 132
   observation_space_dim: 1024
+  terminated_coverage: 0.97
   is_vec_env: 1
   env_num: 8  
 

@@ -71,6 +71,7 @@ def config_to_args(config):
         # Environment
         "view_num": env.get("view_num", 33),
         "observation_space_dim": env.get("observation_space_dim", 1024),
+        "terminated_coverage": env.get("terminated_coverage", 0.97),
         "is_vec_env": env.get("is_vec_env", 0),
         "env_num": env.get("env_num", 8),
         # Training
@@ -222,6 +223,7 @@ def make_env(data_path, env_id, args):
             data_path=data_path,
             view_num=args.view_num,
             observation_space_dim=args.observation_space_dim,
+            terminated_coverage=args.terminated_coverage,
             env_id=env_id,
             log_level=logging.INFO,
             is_ratio_reward=(args.is_ratio_reward == 1),
@@ -421,6 +423,7 @@ if __name__ == "__main__":
             data_path=args.train_data_path,
             view_num=args.view_num,
             observation_space_dim=args.observation_space_dim,
+            terminated_coverage=args.terminated_coverage,
             log_level=logging.INFO,
             is_ratio_reward=(args.is_ratio_reward == 1),
         )
@@ -429,12 +432,14 @@ if __name__ == "__main__":
         data_path=args.verify_data_path,
         view_num=args.view_num,
         observation_space_dim=args.observation_space_dim,
+        terminated_coverage=args.terminated_coverage,
         log_level=logging.INFO,
     )
     test_env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
         data_path=args.test_data_path,
         view_num=args.view_num,
         observation_space_dim=args.observation_space_dim,
+        terminated_coverage=args.terminated_coverage,
         log_level=logging.INFO,
     )
     logger.info("Environments ready ✅")
