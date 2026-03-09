@@ -83,7 +83,7 @@ class NextBestViewCustomCallback(BaseCallback):
         init_step = 0
         for model_id in range(model_size):
             obs = self.verify_env.reset(init_step=init_step)
-            init_step = (init_step + 1) % 33
+            init_step = (init_step + 1) % self.verify_env.view_num
             with open(self.output_file, "a+", encoding="utf-8") as f:
                 f.write(
                     "{}: ({}) [0]{:.2f} ".format(
@@ -110,7 +110,7 @@ class NextBestViewCustomCallback(BaseCallback):
         average_coverage = np.zeros(10)
         for model_id in range(model_size):
             obs = self.test_env.reset(init_step=init_step)
-            init_step = (init_step + 1) % 33
+            init_step = (init_step + 1) % self.test_env.view_num
             average_coverage[0] += self.test_env.current_coverage
             for step_id in range(self.step_size - 1):
                 action, _states = self.model.predict(obs, deterministic=True)
