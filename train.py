@@ -331,7 +331,7 @@ class ProgressCallback(BaseCallback):
     ):
         super().__init__(verbose)
         self.total_timesteps = total_timesteps
-        self.logger = logger
+        self.progress_logger = logger
         self.log_interval = max(1, int(log_interval))
         self.next_log_step = self.log_interval
         self.pbar = None
@@ -346,7 +346,7 @@ class ProgressCallback(BaseCallback):
                 unit="step",
             )
         else:
-            self.logger.info(
+            self.progress_logger.info(
                 "Training progress logging enabled (interval={} steps)".format(
                     self.log_interval
                 )
@@ -367,7 +367,7 @@ class ProgressCallback(BaseCallback):
                 100.0,
                 100.0 * float(self.num_timesteps) / float(max(1, self.total_timesteps)),
             )
-            self.logger.info(
+            self.progress_logger.info(
                 "Training progress: {}/{} steps ({:.2f}%)".format(
                     self.num_timesteps,
                     self.total_timesteps,
