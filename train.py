@@ -45,6 +45,33 @@ def setup_logger(log_file="train_detail.log"):
     return logger
 
 
+def setup_worker_logger(logger_name, log_file):
+    """Create process-local logger handlers for SubprocVecEnv workers."""
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.DEBUG)
+
+    if logger.handlers:
+        return logger
+
+    log_format = logging.Formatter(
+        "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"
+    )
+
+    file_handle = logging.FileHandler(log_file)
+    file_handle.setFormatter(log_format)
+    file_handle.setLevel(logging.DEBUG)
+
+    console_handle = logging.StreamHandler()
+    console_handle.setFormatter(log_format)
+    console_handle.setLevel(logging.INFO)
+
+    logger.addHandler(file_handle)
+    logger.addHandler(console_handle)
+    # Avoid propagation to root logger in worker processes.
+    logger.propagate = False
+    return logger
+
+
 # ============================================================================
 # CONFIG
 # ============================================================================
@@ -262,15 +289,16 @@ def load_checkpoint(checkpoint_path, train_env, policy_kwargs, logger):
 # ============================================================================
 # ENVIRONMENT
 # ============================================================================
-def make_env(data_path, env_id, logger, args):
+def make_env(data_path, env_id, logger_name, log_file, args):
     def _f():
+        worker_logger = setup_worker_logger(logger_name, log_file)
         env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
             data_path=data_path,
             view_num=args.view_num,
             observation_space_dim=args.observation_space_dim,
             terminated_coverage=args.terminated_coverage,
             env_id=env_id,
-            logger=logger,
+            logger=worker_logger,
             is_ratio_reward=(args.is_ratio_reward == 1),
         )
         return env
@@ -329,9 +357,11 @@ def transfer_pretrained_weights(model, args, logger):
         logger.error(
             "Pretrained model not found: {}".format(args.pretrained_model_path)
         )
-        raise FileNotFoundError(f"Pretrained model not found: {args.pretrained_model_path}")
+        raise FileNotFoundError(
+            f"Pretrained model not found: {args.pretrained_model_path}"
+        )
 
-    checkpoint = torch.load(args.pretrained_model_path , weights_only=False)
+    checkpoint = torch.load(args.pretrained_model_path, weights_only=False)
     pretrained_dict = checkpoint["model_state_dict"]
     qnet_dict = model.policy.q_net.state_dict()
     update_dict = copy.deepcopy(qnet_dict)
@@ -360,7 +390,9 @@ def transfer_pretrained_weights(model, args, logger):
     )
     if missing_keys:
         logger.error("Missing keys: {}".format(missing_keys))
-        raise RuntimeError(f"Not all pretrained weights were transferred. Missing: {missing_keys}")
+        raise RuntimeError(
+            f"Not all pretrained weights were transferred. Missing: {missing_keys}"
+        )
     return model
 
 
@@ -459,7 +491,14 @@ if __name__ == "__main__":
     logger.info("Building environments...")
     if args.is_vec_env:
         env_list = [
-            make_env(args.train_data_path, i, logger.getChild(f"train_env_{i}"), args) for i in range(args.env_num)
+            make_env(
+                args.train_data_path,
+                i,
+                "train.train_env_{}".format(i),
+                args.log_file,
+                args,
+            )
+            for i in range(args.env_num)
         ]
         train_env = stable_baselines3.common.vec_env.SubprocVecEnv(env_list)
         logger.info("VecEnv: {} workers".format(args.env_num))
