@@ -321,26 +321,61 @@ def linear_schedule(initial_value: float) -> Callable[[float], float]:
 # ============================================================================
 # PROGRESS BAR CALLBACK
 # ============================================================================
-class TqdmCallback(BaseCallback):
-    def __init__(self, total_timesteps: int, verbose: int = 0):
+class ProgressCallback(BaseCallback):
+    def __init__(
+        self,
+        total_timesteps: int,
+        logger,
+        log_interval: int = 10,
+        verbose: int = 0,
+    ):
         super().__init__(verbose)
         self.total_timesteps = total_timesteps
+        self.logger = logger
+        self.log_interval = max(1, int(log_interval))
+        self.next_log_step = self.log_interval
         self.pbar = None
+        self.use_tqdm = False
 
     def _on_training_start(self) -> None:
-        self.pbar = tqdm(
-            total=self.total_timesteps,
-            desc="Training",
-            unit="step",
-            disable=not sys.stdout.isatty(),
-        )
+        self.use_tqdm = sys.stdout.isatty()
+        if self.use_tqdm:
+            self.pbar = tqdm(
+                total=self.total_timesteps,
+                desc="Training",
+                unit="step",
+            )
+        else:
+            self.logger.info(
+                "Training progress logging enabled (interval={} steps)".format(
+                    self.log_interval
+                )
+            )
 
     def _on_step(self) -> bool:
-        if self.pbar is None:
+        if self.use_tqdm and self.pbar is not None:
+            delta = self.num_timesteps - self.pbar.n
+            if delta > 0:
+                self.pbar.update(delta)
             return True
-        delta = self.num_timesteps - self.pbar.n
-        if delta > 0:
-            self.pbar.update(delta)
+
+        if (
+            self.num_timesteps >= self.next_log_step
+            or self.num_timesteps >= self.total_timesteps
+        ):
+            progress = min(
+                100.0,
+                100.0 * float(self.num_timesteps) / float(max(1, self.total_timesteps)),
+            )
+            self.logger.info(
+                "Training progress: {}/{} steps ({:.2f}%)".format(
+                    self.num_timesteps,
+                    self.total_timesteps,
+                    progress,
+                )
+            )
+            while self.num_timesteps >= self.next_log_step:
+                self.next_log_step += self.log_interval
         return True
 
     def _on_training_end(self) -> None:
@@ -595,7 +630,7 @@ if __name__ == "__main__":
         save_freq=args.save_freq,
         save_path=args.checkpoint_path,
     )
-    progress_callback = TqdmCallback(total_steps)
+    progress_callback = ProgressCallback(total_steps, logger=logger, log_interval=10)
     callbacks = CallbackList([custom_callback, progress_callback])
 
     # ── Training ──────────────────────────────────────────────────────────────
