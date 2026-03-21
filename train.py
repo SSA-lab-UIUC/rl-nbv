@@ -140,6 +140,7 @@ def config_to_args(config):
         "log_file": log.get("log_file", "train_detail.log"),
         "coverage_log_freq_normal": log.get("coverage_log_freq_normal"),
         "coverage_log_freq_profile": log.get("coverage_log_freq_profile"),
+        "progress_log_interval": log.get("progress_log_interval", 10),
     }
 
 
@@ -630,7 +631,11 @@ if __name__ == "__main__":
         save_freq=args.save_freq,
         save_path=args.checkpoint_path,
     )
-    progress_callback = ProgressCallback(total_steps, logger=logger, log_interval=10)
+    progress_callback = ProgressCallback(
+        total_steps,
+        logger=logger,
+        log_interval=args.progress_log_interval,
+    )
     callbacks = CallbackList([custom_callback, progress_callback])
 
     # ── Training ──────────────────────────────────────────────────────────────

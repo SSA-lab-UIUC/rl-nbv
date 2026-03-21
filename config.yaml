@@ -65,6 +65,7 @@ training:
     log_file: ./artefacts/train/train.log
     coverage_log_freq_normal: 50000
     coverage_log_freq_profile: 200
+    progress_log_interval: 10
 
 # Replay Buffer Generation (Oracle Policy)
 replay_buffer_generation:
