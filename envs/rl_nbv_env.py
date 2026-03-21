@@ -50,8 +50,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         terminated_coverage=0.97,
         max_step=11,
         env_id=None,
-        log_level=logging.DEBUG,
-        is_print=True,
+        logger=logging.getLogger(__name__),
         is_normalize=True,
         is_ratio_reward=False,
         is_reward_with_cur_coverage=False,
@@ -66,7 +65,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.DEVICE = (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
-        self._init_logger(env_id, log_level, is_print=is_print)
+        self.logger = logger
         self.logger.info("PointCloudNextBestViewEnv is ok")
         real_data_path = data_path
         if env_id is not None:
@@ -405,27 +404,3 @@ class PointCloudNextBestViewEnv(gym.Env):
                 self.model_name, self.action_history
             )
         )
-
-    def _init_logger(self, env_id, log_level, is_print=False, is_log_file=True):
-        log_path = None
-        if env_id == None:
-            log_path = "env.log"
-        else:
-            log_path = "env_{}.log".format(env_id)
-
-        self.logger = logging.getLogger(log_path)
-        self.logger.setLevel(log_level)
-        log_format = logging.Formatter(
-            "[%(asctime)s] [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"
-        )
-
-        if is_print:
-            shell_handle = logging.StreamHandler()
-            shell_handle.setFormatter(log_format)
-            shell_handle.setLevel(log_level)
-            self.logger.addHandler(shell_handle)
-        if is_log_file:
-            file_handle = logging.FileHandler(log_path)
-            file_handle.setFormatter(log_format)
-            file_handle.setLevel(log_level)
-            self.logger.addHandler(file_handle)
