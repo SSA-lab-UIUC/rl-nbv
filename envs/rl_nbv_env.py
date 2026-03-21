@@ -19,24 +19,33 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 def resample_pcd(pcd, n, logger, name):
     """Drop or duplicate points so that pcd has exactly n points"""
     if pcd.shape[0] == 0:
-        logger.error("obervation space points is 0! model: {}".format(name))
+        logger.debug("observation source point cloud is empty, model: {}".format(name))
         return np.zeros((n, 3))
     idx = np.random.permutation(pcd.shape[0])
     if idx.shape[0] < n:
         idx = np.concatenate(
             [idx, np.random.randint(pcd.shape[0], size=n - pcd.shape[0])]
         )
+    logger.debug("resample_pcd from {} to {}, model: {}".format(pcd.shape[0], n, name))
     return pcd[idx[:n]]
 
 
 def normalize_pc(points, logger, name):
+    if points.shape[0] == 0:
+        logger.debug("normalize received empty points, model: {}".format(name))
+        return points
     centroid = np.mean(points, axis=0)
     points -= centroid
     furthest_distance = np.max(np.sqrt(np.sum(abs(points) ** 2, axis=-1)))
     if furthest_distance == 0:
-        logger.error("furthest_distance is 0, model: {}".format(name))
+        logger.debug(
+            "normalize skipped due to zero furthest distance, model: {}".format(name)
+        )
         return points
     points /= furthest_distance
+    logger.debug(
+        "normalize furthest distance: {:.6f}, model: {}".format(furthest_distance, name)
+    )
     return points
 
 
@@ -369,11 +378,17 @@ class PointCloudNextBestViewEnv(gym.Env):
     def _get_observation_space(self):
         if self.observation_space_dim == -1:
             # do not downsample, just for debug
-            cur_pc = self.current_points_cloud_from_gt.T
+            source_pc = self.current_points_cloud_from_gt
+            if source_pc.shape[0] == 0:
+                source_pc = self.current_points_cloud
+            cur_pc = source_pc.T
             return {"current_point_cloud": cur_pc, "view_state": self.view_state}
         else:
+            source_pc = self.current_points_cloud_from_gt
+            if source_pc.shape[0] == 0:
+                source_pc = self.current_points_cloud
             cur_pc = resample_pcd(
-                self.current_points_cloud_from_gt,
+                source_pc,
                 self.observation_space_dim,
                 self.logger,
                 self.model_name,
