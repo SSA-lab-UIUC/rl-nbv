@@ -10,19 +10,23 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies + Python 3.11 via deadsnakes PPA
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common \
         curl \
         git \
         build-essential \
         ninja-build \
-    && add-apt-repository ppa:deadsnakes/ppa -y \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 \
-        python3.11-dev \
-        python3.11-venv \
-        python3.11-distutils \
+        python3 \
+        python3-dev \
+        python3-venv \
+        python3-pip \
+        libx11-6 \
+        libxext6 \
+        libxrender1 \
+        libsm6 \
+        libglib2.0-0 \
+        libgl1 \
+        libgomp1 \
+        libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -46,4 +50,4 @@ COPY optim/ optim/
 COPY distance/chamfer_distance.py distance/chamfer_distance.cpp distance/chamfer_distance.cu distance/
 
 # Default: run training with config.yaml
-CMD ["uv", "run", "--no-dev", "python", "train.py", "--config", "config.yaml"]
+CMD ["uv", "run", "train.py", "--config", "config.yaml"]
