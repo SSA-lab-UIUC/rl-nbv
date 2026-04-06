@@ -58,6 +58,7 @@ def config_to_args(config):
         "view_num": env.get("view_num", 33),
         "observation_space_dim": env.get("observation_space_dim", 1024),
         "viewpoints_path": env["viewpoints_path"],
+        "sun_position_config": env.get("sun_position", {}),
         "is_vec_env": env.get("is_vec_env", 0),
         "env_num": env.get("env_num", 8),
         "step_size": train.get("step_size", 10),
@@ -225,6 +226,7 @@ if __name__ == "__main__":
         view_num=args.view_num,
         observation_space_dim=args.observation_space_dim,
         log_level=logging.INFO,
+        sun_position_config=args.sun_position_config,
     )
 
     # Load trained DQN

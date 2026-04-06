@@ -60,6 +60,7 @@ def config_to_args(config):
         "observation_space_dim": env.get("observation_space_dim", 1024),
         "terminated_coverage": env.get("terminated_coverage", 0.97),
         "viewpoints_path": env["viewpoints_path"],
+        "sun_position_config": env.get("sun_position", {}),
         "step_size": train.get("step_size", 10),
         "is_ratio_reward": train.get("is_ratio_reward", 1),
         "output_file": out.get("output_file", "train_result.txt"),
@@ -215,6 +216,7 @@ if __name__ == "__main__":
         logger=logger.getChild("random_env"),
         is_ratio_reward=(args.is_ratio_reward == 1),
         max_step=step_size,
+        sun_position_config=args.sun_position_config,
     )
 
     avg_per_step, avg_final = run_random_coverage(

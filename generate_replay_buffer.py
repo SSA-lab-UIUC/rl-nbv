@@ -33,6 +33,7 @@ def config_to_args(config):
         "observation_space_dim": env.get("observation_space_dim", 1024),
         "env_num": env.get("env_num", 1),
         "viewpoints_path": env["viewpoints_path"],
+        "sun_position_config": env.get("sun_position", {}),
         # Replay Buffer Generation
         "step_size": rbg.get("step_size", 10),
         "buffer_size": rbg.get("buffer_size", 1000000),
@@ -90,6 +91,7 @@ def make_env(data_path, env_id, args, logger):
                 is_ratio_reward=(args.is_ratio_reward == 1),
                 is_reward_with_cur_coverage=(args.is_reward_with_cur_coverage == 1),
                 cur_coverage_ratio=args.cur_coverage_ratio,
+                sun_position_config=args.sun_position_config,
             )
             return env
         if args.is_ratio_reward == 1:
@@ -103,6 +105,7 @@ def make_env(data_path, env_id, args, logger):
                 is_ratio_reward=True,
                 is_reward_with_cur_coverage=(args.is_reward_with_cur_coverage == 1),
                 cur_coverage_ratio=args.cur_coverage_ratio,
+                sun_position_config=args.sun_position_config,
             )
             logger.info("is_ratio_reward is True")
         else:
@@ -116,6 +119,7 @@ def make_env(data_path, env_id, args, logger):
                 is_ratio_reward=False,
                 is_reward_with_cur_coverage=(args.is_reward_with_cur_coverage == 1),
                 cur_coverage_ratio=args.cur_coverage_ratio,
+                sun_position_config=args.sun_position_config,
             )
             logger.info("is_ratio_reward is False")
         return env

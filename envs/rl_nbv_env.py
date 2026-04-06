@@ -13,6 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from distance.chamfer_distance import ChamferDistanceFunction
 from envs.state_transition import (
     TargetOrbitConfig,
+    calculate_sun_position,
     get_travel_time,
     compute_all_travel_times,
 )
@@ -71,6 +72,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         is_reward_with_cur_coverage=False,
         cur_coverage_ratio=1.0,
         time_cost_weight=1.0,
+        sun_position_config=None,
     ):
         """
         Initialize Point Cloud Next Best View Environment.
@@ -87,6 +89,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.is_reward_with_cur_coverage = is_reward_with_cur_coverage
         self.cur_coverage_ratio = cur_coverage_ratio
         self.time_cost_weight = time_cost_weight
+        self.sun_position_config = sun_position_config or {}
         self.terminated_coverage = terminated_coverage
         self.action_space = spaces.Discrete(view_num)
         self.DEVICE = (
@@ -217,6 +220,32 @@ class PointCloudNextBestViewEnv(gym.Env):
         # Current mission time (starts at 0.0, increments as agent moves)
         self.current_time = 0.0
 
+        # ============================================================================
+        # SUN POSITION INITIALIZATION
+        # ============================================================================
+        default_sun_position = np.array([1.0, 0.0, 0.0], dtype=float)
+        initial_sun_position = self.sun_position_config.get(
+            "initial_direction", default_sun_position
+        )
+        self.initial_sun_position = np.asarray(initial_sun_position, dtype=float)
+        if self.initial_sun_position.shape != (3,):
+            raise ValueError(
+                "sun_position_config['initial_direction'] must have shape (3,), got {}".format(
+                    self.initial_sun_position.shape
+                )
+            )
+
+        self.sun_orbital_params = self.sun_position_config.get("orbital_params", {})
+        if not self.sun_orbital_params:
+            self.sun_orbital_params = {"angular_velocity_rad_per_s": 0.0}
+
+        self.current_sun_position = self.initial_sun_position.astype(float)
+        self.logger.debug(
+            "[SUN] Initialized. current_sun_position={} orbital_params={}".format(
+                self.current_sun_position.tolist(), self.sun_orbital_params
+            )
+        )
+
     def step(self, action):
         # ============================================================================
         # STEP 1: RETRIEVE TRAVEL TIME TO TARGET VIEWPOINT
@@ -256,6 +285,22 @@ class PointCloudNextBestViewEnv(gym.Env):
                 f"[TIME] Mission time advanced: {previous_time:.6f} + {travel_time:.6f} = {self.current_time:.6f} "
                 f"/ {self.orbit_config.total_time:.6f}"
             )
+
+        # Keep sun direction advanced with mission time
+        self.current_sun_position = calculate_sun_position(
+            action=action,
+            new_time=self.current_time,
+            prev_sun_position=self.current_sun_position,
+            orbital_params=self.sun_orbital_params,
+        )
+        self.logger.debug(
+            "[SUN] advanced: t={:.6f} dir=[{:.6f}, {:.6f}, {:.6f}]".format(
+                self.current_time,
+                self.current_sun_position[0],
+                self.current_sun_position[1],
+                self.current_sun_position[2],
+            )
+        )
 
         # ============================================================================
         # STEP 3 & 4: UPDATE CURRENT VIEW AND TRACK ACTION HISTORY
@@ -508,6 +553,22 @@ class PointCloudNextBestViewEnv(gym.Env):
             f"[reset] Mission time reset to 0.0. Horizon: {self.orbit_config.total_time:.6f} time units"
         )
 
+        # Re-initialize and synchronize sun direction with reset mission time.
+        self.current_sun_position = calculate_sun_position(
+            action=self.current_view,
+            new_time=self.current_time,
+            prev_sun_position=self.initial_sun_position,
+            orbital_params=self.sun_orbital_params,
+        )
+        self.logger.debug(
+            "[SUN] reset: t={:.6f} dir=[{:.6f}, {:.6f}, {:.6f}]".format(
+                self.current_time,
+                self.current_sun_position[0],
+                self.current_sun_position[1],
+                self.current_sun_position[2],
+            )
+        )
+
         observation = self._get_observation_space()
         info = self._get_info()
         self.logger.debug("[reset] pass, init step: {}".format(self.current_view))
@@ -653,6 +714,8 @@ class PointCloudNextBestViewEnv(gym.Env):
             "cur_points_cloud": self.ground_truth_points_cloud,
             "model_name": self.model_name,
             "current_coverage": self.current_coverage,
+            "sun_position": self.current_sun_position.copy(),
+            "mission_time": self.current_time,
         }
 
     def _get_debug_info(self):

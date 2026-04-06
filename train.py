@@ -102,6 +102,7 @@ def config_to_args(config):
         "is_vec_env": env.get("is_vec_env", 0),
         "env_num": env.get("env_num", 8),
         "viewpoints_path": env["viewpoints_path"],
+        "sun_position_config": env.get("sun_position", {}),
         # Training
         "step_size": train.get("step_size", 10),
         "is_ratio_reward": train.get("is_ratio_reward", 1),
@@ -303,6 +304,7 @@ def make_env(data_path, env_id, logger_name, log_file, args):
             env_id=env_id,
             logger=worker_logger,
             is_ratio_reward=(args.is_ratio_reward == 1),
+            sun_position_config=args.sun_position_config,
         )
         return env
 
@@ -549,6 +551,7 @@ if __name__ == "__main__":
             terminated_coverage=args.terminated_coverage,
             logger=logger.getChild("train_env"),
             is_ratio_reward=(args.is_ratio_reward == 1),
+            sun_position_config=args.sun_position_config,
         )
 
     verify_env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
@@ -558,6 +561,7 @@ if __name__ == "__main__":
         observation_space_dim=args.observation_space_dim,
         terminated_coverage=args.terminated_coverage,
         logger=logger.getChild("verify_env"),
+        sun_position_config=args.sun_position_config,
     )
     test_env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
         data_path=args.test_data_path,
@@ -566,6 +570,7 @@ if __name__ == "__main__":
         observation_space_dim=args.observation_space_dim,
         terminated_coverage=args.terminated_coverage,
         logger=logger.getChild("test_env"),
+        sun_position_config=args.sun_position_config,
     )
     logger.info("Environments ready ✅")
     log_gpu_memory(logger, tag="[after envs]")
