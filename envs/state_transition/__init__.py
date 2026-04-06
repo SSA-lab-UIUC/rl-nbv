@@ -9,6 +9,7 @@ from .travel_time import (
     advance_time,
     compute_all_travel_times,
 )
+from .visibility import get_lit_visible_points
 
 __all__ = [
     "TargetOrbitConfig",
@@ -18,4 +19,5 @@ __all__ = [
     "advance_time",
     "compute_all_travel_times",
     "calculate_sun_position",
+    "get_lit_visible_points",
 ]
