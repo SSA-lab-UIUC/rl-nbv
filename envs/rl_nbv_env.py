@@ -11,7 +11,11 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from distance.chamfer_distance import ChamferDistanceFunction
-from envs.state_transition import TargetOrbitConfig, get_travel_time, compute_all_travel_times
+from envs.state_transition import (
+    TargetOrbitConfig,
+    get_travel_time,
+    compute_all_travel_times,
+)
 import logging
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -54,6 +58,7 @@ class PointCloudNextBestViewEnv(gym.Env):
     def __init__(
         self,
         data_path,
+        viewpoints_path,
         view_num=33,
         begin_view=-1,
         observation_space_dim=-1,
@@ -69,7 +74,7 @@ class PointCloudNextBestViewEnv(gym.Env):
     ):
         """
         Initialize Point Cloud Next Best View Environment.
-        
+
         Args:
             time_cost_weight: Weight of travel time penalty in reward calculation.
                             reward = coverage_gain - time_cost_weight * travel_time
@@ -167,40 +172,48 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.coverage_add = self.current_coverage
         self.step_cnt = 1
         self.model_name = self.shapenet_reader.get_model_info()
-        
+
         # ============================================================================
         # TRAVEL TIME INITIALIZATION
         # ============================================================================
-        # Load viewpoints from disk (33 viewpoints on unit sphere surface)
-        viewpoints_path = os.path.join(
-            os.path.dirname(__file__), "..", "output", "acrimsat_final", "viewpoints_33.txt"
+        # Load viewpoints from the required path
+        resolved_viewpoints_path = os.path.expanduser(viewpoints_path)
+        if not os.path.isabs(resolved_viewpoints_path):
+            resolved_viewpoints_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", resolved_viewpoints_path)
+            )
+
+        if not os.path.exists(resolved_viewpoints_path):
+            raise FileNotFoundError(
+                "viewpoints_path does not exist: {}".format(resolved_viewpoints_path)
+            )
+
+        self.viewpoints = np.loadtxt(resolved_viewpoints_path)  # Shape: (N, 3)
+        self.logger.info(
+            f"Loaded {self.viewpoints.shape[0]} viewpoints from {resolved_viewpoints_path}"
         )
-        if os.path.exists(viewpoints_path):
-            self.viewpoints = np.loadtxt(viewpoints_path)  # Shape: (33, 3)
-            self.logger.info(f"Loaded {self.viewpoints.shape[0]} viewpoints from {viewpoints_path}")
-        else:
-            self.logger.warning(f"Viewpoints file not found at {viewpoints_path}")
-            self.viewpoints = None
-        
+
         # Initialize orbital configuration for travel time calculations
         # orbit_radius: 1.0 (unit sphere)
         # grav_param: 1.0 (dimensionless, controls orbital dynamics)
         # num_orbits: 2.0 (mission horizon = 2 complete orbits)
         self.orbit_config = TargetOrbitConfig(
-            orbit_radius=1.0,
-            grav_param=1.0,
-            num_orbits=2.0
+            orbit_radius=1.0, grav_param=1.0, num_orbits=2.0
         )
-        
+
         # Precompute travel times between all pairs of viewpoints
         # Shape: (view_num, view_num) where [i,j] = travel time from view i to view j
         if self.viewpoints is not None:
-            self.travel_times = compute_all_travel_times(self.viewpoints, self.orbit_config)
-            self.logger.info(f"Precomputed travel times matrix shape: {self.travel_times.shape}")
+            self.travel_times = compute_all_travel_times(
+                self.viewpoints, self.orbit_config
+            )
+            self.logger.info(
+                f"Precomputed travel times matrix shape: {self.travel_times.shape}"
+            )
         else:
             self.travel_times = None
             self.logger.warning("Travel times not computed (viewpoints unavailable)")
-        
+
         # Current mission time (starts at 0.0, increments as agent moves)
         self.current_time = 0.0
 
@@ -220,8 +233,10 @@ class PointCloudNextBestViewEnv(gym.Env):
             )
         else:
             travel_time = 0.0
-            self.logger.warning("[TRAVEL_TIME] Travel times unavailable, using travel_time=0")
-        
+            self.logger.warning(
+                "[TRAVEL_TIME] Travel times unavailable, using travel_time=0"
+            )
+
         # ============================================================================
         # STEP 2: UPDATE MISSION TIME
         # ============================================================================
@@ -229,7 +244,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         # The mission has a time horizon (total_time) that limits exploration.
         previous_time = self.current_time
         self.current_time = self.current_time + travel_time
-        
+
         # Clamp time to mission horizon
         if self.current_time > self.orbit_config.total_time:
             self.current_time = self.orbit_config.total_time
@@ -241,13 +256,13 @@ class PointCloudNextBestViewEnv(gym.Env):
                 f"[TIME] Mission time advanced: {previous_time:.6f} + {travel_time:.6f} = {self.current_time:.6f} "
                 f"/ {self.orbit_config.total_time:.6f}"
             )
-        
+
         # ============================================================================
         # STEP 3 & 4: UPDATE CURRENT VIEW AND TRACK ACTION HISTORY
         # ============================================================================
         self.action_history.append(action)
         self.step_cnt += 1
-        
+
         if self.view_state[action] == 1:
             # ====================================================================
             # ALREADY VISITED: Penalize revisiting the same viewpoint
@@ -262,19 +277,25 @@ class PointCloudNextBestViewEnv(gym.Env):
             self.logger.debug(
                 "[step] REVISIT | action: {:2d}, travel_time: {:.6f}, time: {:.6f}/{:.6f}, cover_add: {:.2f}, "
                 "cur_cover: {:.2f}, step_cnt: {:2d}, terminated: {}".format(
-                    action, travel_time, self.current_time, self.orbit_config.total_time, 
-                    0, self.current_coverage * 100, self.step_cnt, terminated
+                    action,
+                    travel_time,
+                    self.current_time,
+                    self.orbit_config.total_time,
+                    0,
+                    self.current_coverage * 100,
+                    self.step_cnt,
+                    terminated,
                 )
             )
             return observation, reward, terminated, info
-        
+
         # ============================================================================
         # STEP 5: LOAD POINT CLOUD FROM SELECTED VIEWPOINT
         # ============================================================================
         # Load the point cloud (3D points) that would be visible from the target viewpoint.
         new_points_cloud = self.shapenet_reader.get_point_cloud_by_view_id(action)
         self.view_state[action] = 1
-        
+
         # Update current view for next iteration
         self.current_view = action
         new_points_cloud_tensor = new_points_cloud[np.newaxis, :, :].astype(np.float32)
@@ -283,7 +304,7 @@ class PointCloudNextBestViewEnv(gym.Env):
             np.float32
         )
         cur_points_cloud_tensor = torch.tensor(cur_points_cloud_tensor).to(self.DEVICE)
-        
+
         # ============================================================================
         # STEP 6: COMPUTE NEWLY OBSERVED POINTS (UNSEEN POINTS)
         # ============================================================================
@@ -310,8 +331,14 @@ class PointCloudNextBestViewEnv(gym.Env):
             self.logger.debug(
                 "[step] NO_NEW | action: {:2d}, travel_time: {:.6f}, time: {:.6f}/{:.6f}, cover_add: {:.2f}, "
                 "cur_cover: {:.2f}, step_cnt: {:2d}, terminated: {}".format(
-                    action, travel_time, self.current_time, self.orbit_config.total_time,
-                    0, self.current_coverage * 100, self.step_cnt, terminated
+                    action,
+                    travel_time,
+                    self.current_time,
+                    self.orbit_config.total_time,
+                    0,
+                    self.current_coverage * 100,
+                    self.step_cnt,
+                    terminated,
                 )
             )
             return observation, reward, terminated, info
@@ -323,7 +350,7 @@ class PointCloudNextBestViewEnv(gym.Env):
             np.float32
         )
         increase_points_tensor = torch.tensor(increase_points_tensor).to(self.DEVICE)
-        
+
         # ============================================================================
         # STEP 7: COMPUTE COVERAGE INCREMENT
         # ============================================================================
@@ -367,24 +394,24 @@ class PointCloudNextBestViewEnv(gym.Env):
         # 1. Coverage gained (cover_add) - positive reward for new observations
         # 2. Travel cost (travel_time) - negative reward for time spent
         # 3. Balance: agent learns efficiency = coverage_gain / travel_time
-        # 
+        #
         # Example:
         # - Cover 5% in 0.1 time units: reward = 0.5 - 1.0*0.1 = 0.4
         # - Cover 1% in 0.5 time units: reward = 0.1 - 1.0*0.5 = -0.4
         # Agent learns second option is worse (wasted time)
         reward = self._get_reward(cover_add, action, travel_time=travel_time)
-        
+
         # ============================================================================
         # STEP 10: BUILD NEXT STATE OBSERVATION
         # ============================================================================
         observation = self._get_observation_space()
         terminated = self._get_terminated()
         info = self._get_info()
-        
+
         # Add travel time info to the info dictionary for monitoring
-        info['travel_time'] = travel_time
-        info['mission_time'] = self.current_time
-        info['mission_time_horizon'] = self.orbit_config.total_time
+        info["travel_time"] = travel_time
+        info["mission_time"] = self.current_time
+        info["mission_time_horizon"] = self.orbit_config.total_time
 
         if cover_add == 1:
             self.logger.error("cover_add is 1")
@@ -471,7 +498,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.coverage_add = self.current_coverage
         self.step_cnt = 1
         self.model_name = self.shapenet_reader.get_model_info()
-        
+
         # ============================================================================
         # RESET TRAVEL TIME AND MISSION TIME
         # ============================================================================
@@ -480,7 +507,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.logger.debug(
             f"[reset] Mission time reset to 0.0. Horizon: {self.orbit_config.total_time:.6f} time units"
         )
-        
+
         observation = self._get_observation_space()
         info = self._get_info()
         self.logger.debug("[reset] pass, init step: {}".format(self.current_view))
@@ -524,19 +551,19 @@ class PointCloudNextBestViewEnv(gym.Env):
     def _get_reward(self, cover_add, action, travel_time=0.0):
         """
         Calculate reward combining coverage gain and travel time cost.
-        
+
         Reward = coverage_reward - time_cost_weight * travel_time
-        
+
         This encourages agent to:
         1. Maximize new coverage observation
         2. Minimize travel time (explore efficiently)
         3. Balance between distant high-value targets and nearby ones
-        
+
         Args:
             cover_add: Coverage gained (0.0 to 1.0)
             action: Selected viewpoint action
             travel_time: Time cost to reach this viewpoint (dimensionless units)
-        
+
         Returns:
             Scalar reward value
         """
@@ -564,14 +591,14 @@ class PointCloudNextBestViewEnv(gym.Env):
         else:
             # Simple linear reward: reward = coverage * constant
             coverage_reward = cover_add * 10
-        
+
         # ========================================================================
         # STEP 2: APPLY TRAVEL TIME PENALTY
         # ========================================================================
         # Subtract time cost from coverage gain
         # This makes agent think about efficiency:
         # "Is this viewpoint worth the travel time?"
-        # 
+        #
         # Example:
         # - High coverage gain (0.10) but far away (travel_time=0.5)
         #   reward = 1.0 - 1.0*0.5 = 0.5
@@ -582,12 +609,12 @@ class PointCloudNextBestViewEnv(gym.Env):
         # coverage_reward / travel_time = efficiency
         time_penalty = self.time_cost_weight * travel_time
         final_reward = coverage_reward - time_penalty
-        
+
         self.logger.debug(
             f"[REWARD] action={action:2d}, coverage_reward={coverage_reward:7.4f}, "
             f"time_penalty={time_penalty:7.4f}, final={final_reward:7.4f}"
         )
-        
+
         return final_reward
 
     def _get_observation_space(self):
