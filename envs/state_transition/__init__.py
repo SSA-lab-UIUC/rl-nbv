@@ -1,5 +1,6 @@
 """State transition module for orbital/target-based travel time calculations."""
 
+from .coverage import update_coverage_map, CoverageUpdateResult
 from .sun_position import calculate_sun_position
 from .travel_time import (
     TargetOrbitConfig,
@@ -20,4 +21,6 @@ __all__ = [
     "compute_all_travel_times",
     "calculate_sun_position",
     "get_lit_visible_points",
+    "update_coverage_map",
+    "CoverageUpdateResult",
 ]
