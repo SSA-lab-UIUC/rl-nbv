@@ -32,6 +32,7 @@ def config_to_args(config):
         "view_num": env.get("view_num", 33),
         "observation_space_dim": env.get("observation_space_dim", 1024),
         "env_num": env.get("env_num", 1),
+        "viewpoints_path": env["viewpoints_path"],
         # Replay Buffer Generation
         "step_size": rbg.get("step_size", 10),
         "buffer_size": rbg.get("buffer_size", 1000000),
@@ -82,6 +83,7 @@ def make_env(data_path, env_id, args, logger):
         if args.env_num == 1:
             env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
                 data_path=data_path,
+                viewpoints_path=args.viewpoints_path,
                 view_num=args.view_num,
                 observation_space_dim=args.observation_space_dim,
                 log_level=logging.INFO,
@@ -93,6 +95,7 @@ def make_env(data_path, env_id, args, logger):
         if args.is_ratio_reward == 1:
             env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
                 data_path=data_path,
+                viewpoints_path=args.viewpoints_path,
                 view_num=args.view_num,
                 observation_space_dim=args.observation_space_dim,
                 env_id=env_id,
@@ -105,6 +108,7 @@ def make_env(data_path, env_id, args, logger):
         else:
             env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
                 data_path=data_path,
+                viewpoints_path=args.viewpoints_path,
                 view_num=args.view_num,
                 observation_space_dim=args.observation_space_dim,
                 env_id=env_id,
