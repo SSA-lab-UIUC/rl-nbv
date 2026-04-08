@@ -1,6 +1,7 @@
 """State transition module for orbital/target-based travel time calculations."""
 
 from .coverage import update_coverage_map, CoverageUpdateResult
+from .orchestrator import orchestrate_step, StepResult
 from .reward import calculate_reward, RewardResult
 from .state_builder import build_state, State
 from .sun_position import calculate_sun_position
@@ -29,4 +30,6 @@ __all__ = [
     "RewardResult",
     "build_state",
     "State",
+    "orchestrate_step",
+    "StepResult",
 ]
