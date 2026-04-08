@@ -2,6 +2,7 @@
 
 from .coverage import update_coverage_map, CoverageUpdateResult
 from .reward import calculate_reward, RewardResult
+from .state_builder import build_state, State
 from .sun_position import calculate_sun_position
 from .travel_time import (
     TargetOrbitConfig,
@@ -26,4 +27,6 @@ __all__ = [
     "CoverageUpdateResult",
     "calculate_reward",
     "RewardResult",
+    "build_state",
+    "State",
 ]
