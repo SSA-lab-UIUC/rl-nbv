@@ -12,6 +12,7 @@ dataset:
 # Environment
 environment:
   view_num: 33
+  viewpoints_path: ./output/acrimsat_final/viewpoints_33.txt
   observation_space_dim: 1024
   terminated_coverage: 0.97
   is_vec_env: 1

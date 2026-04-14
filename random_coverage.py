@@ -59,6 +59,7 @@ def config_to_args(config):
         "view_num": env.get("view_num", 33),
         "observation_space_dim": env.get("observation_space_dim", 1024),
         "terminated_coverage": env.get("terminated_coverage", 0.97),
+        "viewpoints_path": env["viewpoints_path"],
         "step_size": train.get("step_size", 10),
         "is_ratio_reward": train.get("is_ratio_reward", 1),
         "output_file": out.get("output_file", "train_result.txt"),
@@ -207,6 +208,7 @@ if __name__ == "__main__":
 
     env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
         data_path=data_path,
+        viewpoints_path=args.viewpoints_path,
         view_num=args.view_num,
         observation_space_dim=args.observation_space_dim,
         terminated_coverage=args.terminated_coverage,

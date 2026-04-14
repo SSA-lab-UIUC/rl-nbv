@@ -151,6 +151,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--view_num", type=int, required=True)
     parser.add_argument("--test_data_path", type=str, required=True)
+    parser.add_argument("--viewpoints_path", type=str, required=True)
     parser.add_argument("--observation_space_dim", type=int, required=True)
     parser.add_argument("--step_size", type=int, required=True)
     parser.add_argument("--is_log", type=int, default=0)
@@ -191,6 +192,7 @@ if __name__ == "__main__":
 
     test_env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
         data_path=args.test_data_path,
+        viewpoints_path=args.viewpoints_path,
         view_num=args.view_num,
         observation_space_dim=args.observation_space_dim,
         log_level=logging.ERROR,
