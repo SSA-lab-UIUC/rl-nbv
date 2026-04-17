@@ -1,4 +1,3 @@
-from typing import Optional
 import numpy as np
 import math
 import gym
@@ -13,9 +12,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from distance.chamfer_distance import ChamferDistanceFunction
 from envs.state_transition import (
     TargetOrbitConfig,
+    build_state,
     calculate_sun_position,
-    get_travel_time,
     compute_all_travel_times,
+    get_lit_visible_points,
+    orchestrate_step,
+    update_coverage_map,
 )
 import logging
 
@@ -171,10 +173,14 @@ class PointCloudNextBestViewEnv(gym.Env):
                         ),
                     }
                 )
-        self.current_coverage = self._caculate_current_coverage()
-        self.coverage_add = self.current_coverage
+        self.current_coverage = 0.0
+        self.coverage_add = 0.0
         self.step_cnt = 1
         self.model_name = self.shapenet_reader.get_model_info()
+        self.reward_config = {
+            "revisit_penalty": -5.0,
+            "coverage_coeff": 1.0,
+        }
 
         # ============================================================================
         # TRAVEL TIME INITIALIZATION
@@ -246,185 +252,56 @@ class PointCloudNextBestViewEnv(gym.Env):
             )
         )
 
-    def step(self, action):
-        # ============================================================================
-        # STEP 1: RETRIEVE TRAVEL TIME TO TARGET VIEWPOINT
-        # ============================================================================
-        # Travel time represents the time cost of rotating the camera from the current
-        # viewpoint to the target viewpoint on the unit sphere surface.
-        travel_time = 0.0
-        if self.travel_times is not None and self.viewpoints is not None:
-            # Lookup travel time from precomputed matrix
-            # travel_times[current_view][action] = time to go from current_view to action
-            travel_time = self.travel_times[self.current_view][action]
-            self.logger.debug(
-                f"[TRAVEL_TIME] From view {self.current_view} to view {action}: {travel_time:.6f} time units"
+        # State-transition runtime structures.
+        self.geometry_cache = {}
+        self._transition_state = None
+        self._canonical_points = np.zeros((0, 3), dtype=np.float32)
+        self._model_transition_cache = {}
+        self._initialize_state_transition_for_current_model(self.current_view)
+
+    def _estimate_surface_normals(self, points):
+        if points.shape[0] == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+        centroid = np.mean(points, axis=0, keepdims=True)
+        vectors = points - centroid
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        normals = vectors / np.maximum(norms, 1e-12)
+        degenerate = norms[:, 0] <= 1e-12
+        if np.any(degenerate):
+            normals[degenerate] = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        return normals.astype(np.float32)
+
+    def _build_visible_points_by_view(self, canonical_points):
+        point_count = canonical_points.shape[0]
+        visible_points = np.zeros((self.view_num, point_count), dtype=bool)
+        if point_count == 0:
+            return visible_points
+
+        canonical_tensor = canonical_points[np.newaxis, :, :].astype(np.float32)
+        canonical_tensor = torch.tensor(canonical_tensor).to(self.DEVICE)
+
+        for view_id in range(self.view_num):
+            view_points = self.shapenet_reader.get_point_cloud_by_view_id(view_id)
+            if view_points is None or view_points.shape[0] == 0:
+                continue
+            view_tensor = view_points[np.newaxis, :, :].astype(np.float32)
+            view_tensor = torch.tensor(view_tensor).to(self.DEVICE)
+            _, dist_to_canonical = ChamferDistanceFunction.apply(
+                view_tensor, canonical_tensor
             )
-        else:
-            travel_time = 0.0
-            self.logger.warning(
-                "[TRAVEL_TIME] Travel times unavailable, using travel_time=0"
+            visible_points[view_id] = (
+                dist_to_canonical.detach().cpu().numpy()[0] < self.COVERAGE_THRESHOLD
             )
 
-        # ============================================================================
-        # STEP 2: UPDATE MISSION TIME
-        # ============================================================================
-        # Advance the mission clock by the travel time.
-        # The mission has a time horizon (total_time) that limits exploration.
-        previous_time = self.current_time
-        self.current_time = self.current_time + travel_time
+        return visible_points
 
-        # Clamp time to mission horizon
-        if self.current_time > self.orbit_config.total_time:
-            self.current_time = self.orbit_config.total_time
-            self.logger.debug(
-                f"[TIME] Time exceeded mission horizon. Clamped: {previous_time:.6f} -> {self.current_time:.6f}"
-            )
-        else:
-            self.logger.debug(
-                f"[TIME] Mission time advanced: {previous_time:.6f} + {travel_time:.6f} = {self.current_time:.6f} "
-                f"/ {self.orbit_config.total_time:.6f}"
-            )
+    def _sync_legacy_coverage_buffers(self):
+        if self._transition_state is None:
+            return
 
-        # Keep sun direction advanced with mission time
-        self.current_sun_position = calculate_sun_position(
-            action=action,
-            new_time=self.current_time,
-            prev_sun_position=self.current_sun_position,
-            orbital_params=self.sun_orbital_params,
-        )
-        self.logger.debug(
-            "[SUN] advanced: t={:.6f} dir=[{:.6f}, {:.6f}, {:.6f}]".format(
-                self.current_time,
-                self.current_sun_position[0],
-                self.current_sun_position[1],
-                self.current_sun_position[2],
-            )
-        )
-
-        # ============================================================================
-        # STEP 3 & 4: UPDATE CURRENT VIEW AND TRACK ACTION HISTORY
-        # ============================================================================
-        self.action_history.append(action)
-        self.step_cnt += 1
-
-        if self.view_state[action] == 1:
-            # ====================================================================
-            # ALREADY VISITED: Penalize revisiting the same viewpoint
-            # ====================================================================
-            # The agent receives a penalty for revisiting a viewpoint that has
-            # already been observed. This encourages exploration of new viewpoints.
-            # Also charge travel time cost - discourage waste of time on revisits
-            reward = self._get_reward(-0.05, action, travel_time=travel_time)
-            observation = self._get_observation_space()
-            terminated = self._get_terminated()
-            info = self._get_info()
-            self.logger.debug(
-                "[step] REVISIT | action: {:2d}, travel_time: {:.6f}, time: {:.6f}/{:.6f}, cover_add: {:.2f}, "
-                "cur_cover: {:.2f}, step_cnt: {:2d}, terminated: {}".format(
-                    action,
-                    travel_time,
-                    self.current_time,
-                    self.orbit_config.total_time,
-                    0,
-                    self.current_coverage * 100,
-                    self.step_cnt,
-                    terminated,
-                )
-            )
-            return observation, reward, terminated, info
-
-        # ============================================================================
-        # STEP 5: LOAD POINT CLOUD FROM SELECTED VIEWPOINT
-        # ============================================================================
-        # Load the point cloud (3D points) that would be visible from the target viewpoint.
-        new_points_cloud = self.shapenet_reader.get_point_cloud_by_view_id(action)
-        self.view_state[action] = 1
-
-        # Update current view for next iteration
-        self.current_view = action
-        new_points_cloud_tensor = new_points_cloud[np.newaxis, :, :].astype(np.float32)
-        new_points_cloud_tensor = torch.tensor(new_points_cloud_tensor).to(self.DEVICE)
-        cur_points_cloud_tensor = self.current_points_cloud[np.newaxis, :, :].astype(
-            np.float32
-        )
-        cur_points_cloud_tensor = torch.tensor(cur_points_cloud_tensor).to(self.DEVICE)
-
-        # ============================================================================
-        # STEP 6: COMPUTE NEWLY OBSERVED POINTS (UNSEEN POINTS)
-        # ============================================================================
-        # Use Chamfer distance to identify which points in the new view have already
-        # been observed (overlay_flag = True means already seen, False = newly observed).
-        # Only newly observed points contribute to coverage reward.
-        dist1, dist2 = ChamferDistanceFunction.apply(
-            new_points_cloud_tensor, cur_points_cloud_tensor
-        )
-        dist1 = dist1.cpu().numpy()
-        overlay_flag = dist1 < self.COVERAGE_THRESHOLD
-
-        increase_points_cloud = new_points_cloud[~overlay_flag[0, :]]
-        if increase_points_cloud.shape[0] == 0:
-            # ====================================================================
-            # NO NEW COVERAGE: All visible points from this view are already seen
-            # ====================================================================
-            # Agent still pays time cost, but doesn't gain coverage
-            # Encourages learning which viewpoints are redundant
-            reward = self._get_reward(0, action, travel_time=travel_time)
-            observation = self._get_observation_space()
-            terminated = self._get_terminated()
-            info = self._get_info()
-            self.logger.debug(
-                "[step] NO_NEW | action: {:2d}, travel_time: {:.6f}, time: {:.6f}/{:.6f}, cover_add: {:.2f}, "
-                "cur_cover: {:.2f}, step_cnt: {:2d}, terminated: {}".format(
-                    action,
-                    travel_time,
-                    self.current_time,
-                    self.orbit_config.total_time,
-                    0,
-                    self.current_coverage * 100,
-                    self.step_cnt,
-                    terminated,
-                )
-            )
-            return observation, reward, terminated, info
-
-        self.current_points_cloud = np.append(
-            self.current_points_cloud, increase_points_cloud, axis=0
-        )
-        increase_points_tensor = increase_points_cloud[np.newaxis, :, :].astype(
-            np.float32
-        )
-        increase_points_tensor = torch.tensor(increase_points_tensor).to(self.DEVICE)
-
-        # ============================================================================
-        # STEP 7: COMPUTE COVERAGE INCREMENT
-        # ============================================================================
-        # Measure how many new points from this viewpoint cover previously unobserved
-        # regions of the 3D model (measured against the ground truth).
-        dist1, dist2 = ChamferDistanceFunction.apply(
-            increase_points_tensor, self.ground_truth_tensor
-        )
-        dist2 = dist2.cpu().numpy()
-        cover_flag = dist2 < self.COVERAGE_THRESHOLD
-        cover_add = np.sum(cover_flag == True)
-        cover_add = cover_add / self.ground_truth_points_cloud_size
-        self.current_coverage += cover_add
-        self.coverage_add = cover_add
-
-        # ============================================================================
-        # STEP 8: UPDATE COVERAGE STATE
-        # ============================================================================
-        # Remove newly covered ground truth points so they aren't counted again
-        # (points already observed are excluded from future coverage calculations).
-        # Points that have already been covered will no longer be counted repeatedly
-        self.current_points_cloud_from_gt = np.append(
-            self.current_points_cloud_from_gt,
-            self.ground_truth_points_cloud[cover_flag[0, :]],
-            axis=0,
-        )
-        self.ground_truth_points_cloud = self.ground_truth_points_cloud[
-            ~cover_flag[0, :]
-        ]
+        coverage_map = np.asarray(self._transition_state["coverage_map"], dtype=bool)
+        self.current_points_cloud_from_gt = self._canonical_points[coverage_map]
+        self.ground_truth_points_cloud = self._canonical_points[~coverage_map]
         self.ground_truth_tensor = self.ground_truth_points_cloud[
             np.newaxis, :, :
         ].astype(np.float32)
@@ -432,49 +309,136 @@ class PointCloudNextBestViewEnv(gym.Env):
             self.DEVICE
         )
 
-        # ============================================================================
-        # STEP 9: CALCULATE REWARD
-        # ============================================================================
-        # Reward combines:
-        # 1. Coverage gained (cover_add) - positive reward for new observations
-        # 2. Travel cost (travel_time) - negative reward for time spent
-        # 3. Balance: agent learns efficiency = coverage_gain / travel_time
-        #
-        # Example:
-        # - Cover 5% in 0.1 time units: reward = 0.5 - 1.0*0.1 = 0.4
-        # - Cover 1% in 0.5 time units: reward = 0.1 - 1.0*0.5 = -0.4
-        # Agent learns second option is worse (wasted time)
-        reward = self._get_reward(cover_add, action, travel_time=travel_time)
+    def _initialize_state_transition_for_current_model(self, initial_view):
+        model_name = self.shapenet_reader.get_model_info()
+        cached_geometry = self._model_transition_cache.get(model_name)
 
-        # ============================================================================
-        # STEP 10: BUILD NEXT STATE OBSERVATION
-        # ============================================================================
+        if cached_geometry is None:
+            self._canonical_points = np.asarray(
+                self.shapenet_reader.ground_truth, dtype=np.float32
+            )
+            surface_normals = self._estimate_surface_normals(self._canonical_points)
+            visible_points_by_view = self._build_visible_points_by_view(
+                self._canonical_points
+            )
+            cached_geometry = {
+                "canonical_points": self._canonical_points,
+                "surface_normals": surface_normals,
+                "visible_points_by_view": visible_points_by_view,
+            }
+            self._model_transition_cache[model_name] = cached_geometry
+        else:
+            self._canonical_points = cached_geometry["canonical_points"]
+
+        self.ground_truth_points_cloud_size = self._canonical_points.shape[0]
+        self.geometry_cache = {
+            "canonical_points": cached_geometry["canonical_points"],
+            "surface_normals": cached_geometry["surface_normals"],
+            "view_positions": self.viewpoints,
+            "travel_times_matrix": self.travel_times,
+            "visible_points_by_view": cached_geometry["visible_points_by_view"],
+        }
+
+        initial_visible_lit = get_lit_visible_points(
+            action=int(initial_view),
+            new_sun_position=self.current_sun_position,
+            geometry_cache=self.geometry_cache,
+        )
+        initial_coverage = update_coverage_map(
+            prev_coverage_map=np.zeros(self.ground_truth_points_cloud_size, dtype=bool),
+            visible_lit_points=initial_visible_lit,
+            total_points=self.ground_truth_points_cloud_size,
+        )
+
+        if self.travel_times is not None:
+            current_travel_times = self.travel_times[int(initial_view)]
+        else:
+            current_travel_times = np.zeros(self.view_num, dtype=np.float32)
+
+        self._transition_state = build_state(
+            action=int(initial_view),
+            new_time=self.current_time,
+            new_sun_position=self.current_sun_position,
+            new_coverage_map=initial_coverage.coverage_map,
+            prev_views=np.zeros(self.view_num, dtype=bool),
+            travel_times=current_travel_times,
+        )
+
+        self.view_state = self._transition_state["views"].astype(np.int32)
+        self.current_coverage = float(np.sum(initial_coverage.coverage_map)) / float(
+            max(self.ground_truth_points_cloud_size, 1)
+        )
+        self.coverage_add = initial_coverage.newly_covered_ratio
+        self._sync_legacy_coverage_buffers()
+
+    def step(self, action):
+        action = int(action)
+        previous_state = self._transition_state
+        was_visited = bool(previous_state["views"][action])
+
+        step_result = orchestrate_step(
+            action=action,
+            current_state=previous_state,
+            orbit_config=self.orbit_config,
+            geometry_cache=self.geometry_cache,
+            orbital_params=self.sun_orbital_params,
+            reward_config=self.reward_config,
+            total_points=self.ground_truth_points_cloud_size,
+        )
+
+        self._transition_state = step_result.next_state
+        self.current_view = int(self._transition_state["_current_view"])
+        self.current_time = float(self._transition_state["_current_time"])
+        self.current_sun_position = self._transition_state["sun_position"].copy()
+        self.view_state = self._transition_state["views"].astype(np.int32)
+        self.coverage_add = step_result.coverage_update.newly_covered_ratio
+        self.current_coverage = float(
+            np.sum(self._transition_state["coverage_map"])
+        ) / float(max(self.ground_truth_points_cloud_size, 1))
+
+        if not was_visited:
+            selected_view_points = self.shapenet_reader.get_point_cloud_by_view_id(
+                action
+            )
+            if selected_view_points is not None and selected_view_points.shape[0] > 0:
+                self.current_points_cloud = np.append(
+                    self.current_points_cloud, selected_view_points, axis=0
+                )
+
+        self._sync_legacy_coverage_buffers()
+        self.action_history.append(action)
+        self.step_cnt += 1
+
         observation = self._get_observation_space()
         terminated = self._get_terminated()
         info = self._get_info()
 
-        # Add travel time info to the info dictionary for monitoring
-        info["travel_time"] = travel_time
+        info["travel_time"] = step_result.travel_time
         info["mission_time"] = self.current_time
         info["mission_time_horizon"] = self.orbit_config.total_time
+        info["reward_breakdown"] = step_result.reward_breakdown
+        info["newly_covered_count"] = step_result.coverage_update.newly_covered_count
 
-        if cover_add == 1:
+        if self.coverage_add == 1:
             self.logger.error("cover_add is 1")
             self._get_debug_info()
+
+        log_label = "REVISIT" if was_visited else "SUCCESS"
         self.logger.debug(
-            "[step] SUCCESS  | action: {:2d}, travel_time: {:.6f}, time: {:.6f}/{:.6f}, cover_add: {:.2f}, "
+            "[step] {} | action: {:2d}, travel_time: {:.6f}, time: {:.6f}/{:.6f}, cover_add: {:.2f}, "
             "cur_cover: {:.2f}, step_cnt: {:2d}, terminated: {}".format(
+                log_label,
                 action,
-                travel_time,
+                step_result.travel_time,
                 self.current_time,
                 self.orbit_config.total_time,
-                cover_add * 100,
+                self.coverage_add * 100,
                 self.current_coverage * 100,
                 self.step_cnt,
                 terminated,
             )
         )
-        return observation, reward, terminated, info
+        return observation, step_result.reward, terminated, info
 
     # for greedy policy test
     def try_step(self, action):
@@ -483,42 +447,25 @@ class PointCloudNextBestViewEnv(gym.Env):
         # ============================================================================
         # This method tests the value of an action without committing to it.
         # Used for greedy policy evaluation and planning.
-        if self.view_state[action] == 1:
+        action = int(action)
+        if self._transition_state is None:
             return 0
-        new_points_cloud = self.shapenet_reader.get_point_cloud_by_view_id(action)
-        new_points_cloud_tensor = new_points_cloud[np.newaxis, :, :].astype(np.float32)
-        new_points_cloud_tensor = torch.tensor(new_points_cloud_tensor).to(self.DEVICE)
-        cur_points_cloud_tensor = self.current_points_cloud[np.newaxis, :, :].astype(
-            np.float32
-        )
-        cur_points_cloud_tensor = torch.tensor(cur_points_cloud_tensor).to(self.DEVICE)
-        dist1, dist2 = ChamferDistanceFunction.apply(
-            new_points_cloud_tensor, cur_points_cloud_tensor
-        )
-        dist1 = dist1.cpu().numpy()
-        overlay_flag = dist1 < self.COVERAGE_THRESHOLD
-
-        increase_points_cloud = new_points_cloud[~overlay_flag[0, :]]
-        if increase_points_cloud.shape[0] == 0:
+        if bool(self._transition_state["views"][action]):
             return 0
 
-        increase_points_tensor = increase_points_cloud[np.newaxis, :, :].astype(
-            np.float32
+        result = orchestrate_step(
+            action=action,
+            current_state=self._transition_state,
+            orbit_config=self.orbit_config,
+            geometry_cache=self.geometry_cache,
+            orbital_params=self.sun_orbital_params,
+            reward_config=self.reward_config,
+            total_points=self.ground_truth_points_cloud_size,
         )
-        increase_points_tensor = torch.tensor(increase_points_tensor).to(self.DEVICE)
-        dist1, dist2 = ChamferDistanceFunction.apply(
-            increase_points_tensor, self.ground_truth_tensor
-        )
-        dist2 = dist2.cpu().numpy()
-        cover_flag = dist2 < self.COVERAGE_THRESHOLD
-        # cover_flag = cover_flag[0, :]
-        cover_add = np.sum(cover_flag == True)
-        cover_add = cover_add / self.ground_truth_points_cloud_size
-        return cover_add
+        return result.coverage_update.newly_covered_ratio
 
     def reset(self, init_step=-1):
         self.shapenet_reader.get_next_model()
-        self.view_state = np.zeros(self.view_num, dtype=np.int32)
         self.action_history.clear()
         if self.begin_view == -1:
             self.current_view = random.randint(0, self.view_num - 1)
@@ -530,17 +477,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.current_points_cloud = self.shapenet_reader.get_point_cloud_by_view_id(
             self.current_view
         )
-        self.view_state[self.current_view] = 1
-        self.ground_truth_points_cloud = self.shapenet_reader.ground_truth
-        self.ground_truth_points_cloud_size = self.ground_truth_points_cloud.shape[0]
-        self.ground_truth_tensor = self.shapenet_reader.ground_truth[
-            np.newaxis, :, :
-        ].astype(np.float32)
-        self.ground_truth_tensor = torch.tensor(self.ground_truth_tensor).to(
-            self.DEVICE
-        )
-        self.current_coverage = self._caculate_current_coverage()
-        self.coverage_add = self.current_coverage
+        self.view_state = np.zeros(self.view_num, dtype=np.int32)
         self.step_cnt = 1
         self.model_name = self.shapenet_reader.get_model_info()
 
@@ -569,6 +506,8 @@ class PointCloudNextBestViewEnv(gym.Env):
             )
         )
 
+        self._initialize_state_transition_for_current_model(self.current_view)
+
         observation = self._get_observation_space()
         info = self._get_info()
         self.logger.debug("[reset] pass, init step: {}".format(self.current_view))
@@ -581,32 +520,12 @@ class PointCloudNextBestViewEnv(gym.Env):
         pass
 
     def _caculate_current_coverage(self):
-        cur_points_cloud_tensor = self.current_points_cloud[np.newaxis, :, :].astype(
-            np.float32
+        if self._transition_state is None:
+            return 0.0
+        coverage = float(np.sum(self._transition_state["coverage_map"])) / float(
+            max(self.ground_truth_points_cloud_size, 1)
         )
-        cur_points_cloud_tensor = torch.tensor(cur_points_cloud_tensor).to(self.DEVICE)
-        dist1, dist2 = ChamferDistanceFunction.apply(
-            cur_points_cloud_tensor, self.ground_truth_tensor
-        )
-        dist2 = dist2.cpu().numpy()
-        cover_flag = dist2 < self.COVERAGE_THRESHOLD
-        # cover_flag = cover_flag[0, :]
-        coverage = np.sum(cover_flag == True)
-        coverage = coverage / self.ground_truth_points_cloud_size
-
-        # Points that have already been covered will no longer be counted repeatedly
-        self.current_points_cloud_from_gt = self.ground_truth_points_cloud[
-            cover_flag[0, :]
-        ]
-        self.ground_truth_points_cloud = self.ground_truth_points_cloud[
-            ~cover_flag[0, :]
-        ]
-        self.ground_truth_tensor = self.ground_truth_points_cloud[
-            np.newaxis, :, :
-        ].astype(np.float32)
-        self.ground_truth_tensor = torch.tensor(self.ground_truth_tensor).to(
-            self.DEVICE
-        )
+        self._sync_legacy_coverage_buffers()
         return coverage
 
     def _get_reward(self, cover_add, action, travel_time=0.0):
