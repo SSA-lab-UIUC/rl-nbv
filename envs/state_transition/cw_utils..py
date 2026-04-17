@@ -43,7 +43,8 @@ Rearranging the position equation:
 
   Φ_rv(t) · v0 = rf − Φ_rr(t) · r0
 
-This is a 3×3 linear system.  Solving it gives v0, and ‖v0‖ = Δv.
+This is a 3×3 linear system.  Solving it gives v0.
+The total Δv = ‖v0‖ + ‖vf‖ (sum of initial and final velocity magnitudes).
 
 Units
 -----
@@ -56,6 +57,9 @@ import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Condition-number threshold above which Φ_rv is treated as singular.
+_COND_THRESHOLD = 1e10
 
 
 # =============================================================================
@@ -196,11 +200,12 @@ class CWDynamics:
 
         Algorithm
         ---------
-        1.  Build Φ_rr and Φ_rv from the CW STM.
+        1.  Build Φ_rr, Φ_rv, Φ_vr, Φ_vv from the CW STM.
         2.  Solve the linear system:
                 Φ_rv · v0  =  rf  −  Φ_rr · r0
             for the required initial velocity v0.
-        3.  Return ‖v0‖ as the scalar Δv cost.
+        3.  Compute final velocity: vf = Φ_vr · r0 + Φ_vv · v0
+        4.  Return Δv = ‖v0‖ + ‖vf‖ as the scalar cost.
 
         Parameters
         ----------
@@ -215,17 +220,27 @@ class CWDynamics:
         Returns
         -------
         delta_v : float
-            Required Δv magnitude (same units as r / time).
+            Total Δv = ‖v0‖ + ‖vf‖ (same units as r / time).
             Returns np.inf if the manoeuvre is dynamically infeasible (e.g.
             Φ_rv is singular at certain multiples of the orbital period).
         v0 : np.ndarray or None
-            Required initial velocity vector (None if infeasible).
+            Required initial velocity vector. Returns None if infeasible.
+            When infeasible, the tuple returned is (np.inf, None).
         """
         # Trivial case: no movement needed
         if t <= 0.0:
-            return 0.0, np.zeros(3)
+            return 0.0, np.zeros(3), np.zeros(3)
 
-        Phi_rr, Phi_rv, _, _ = _build_stm(self.n, t)
+        Phi_rr, Phi_rv, Phi_vr, Phi_vv = _build_stm(self.n, t)
+
+        # Guard against singular Φ_rv (occurs at t = k·π/n, i.e. every
+        # half orbital period — NOT every full period as is sometimes assumed).
+        if np.linalg.cond(Phi_rv) > _COND_THRESHOLD:
+            logger.debug(
+                f"CW singular at t={t:.4f}  (likely t ≈ k·π/n). "
+                "Returning Δv = inf."
+            )
+            return np.inf, None, None
 
         # Rearrange:  rf = Phi_rr·r0 + Phi_rv·v0
         #          →  Phi_rv·v0 = rf - Phi_rr·r0
@@ -234,15 +249,16 @@ class CWDynamics:
         try:
             v0 = np.linalg.solve(Phi_rv, rhs)
         except np.linalg.LinAlgError:
-            # Phi_rv is singular → manoeuvre cannot be performed in this time
             logger.debug(
-                f"CW singular at t={t:.4f}  (likely t ≈ k·2π/n). "
-                "Returning Δv = inf."
+                f"CW solve failed at t={t:.4f}. Returning Δv = inf."
             )
-            return np.inf, None
+            return np.inf, None, None
 
-        delta_v = float(np.linalg.norm(v0))
-        return delta_v, v0
+        # Arrival (braking) burn — must cancel residual velocity at rf
+        vf = Phi_vr @ r0 + Phi_vv @ v0
+
+        delta_v = float(np.linalg.norm(v0)) + float(np.linalg.norm(vf))
+        return delta_v, v0, vf
 
     # -------------------------------------------------------------------------
     def compute_final_velocity(
@@ -337,8 +353,8 @@ def compute_delta_v_matrix(
             rf = viewpoints[j] * orbit_radius
             t  = travel_times[i, j]
 
-            dv, _ = cw.compute_delta_v(r0, rf, t)
-            delta_v_matrix[i, j] = dv
+            dv_total, v0 = cw.compute_delta_v(r0, rf, t)
+            delta_v_matrix[i, j] = dv_total
 
     logger.info(
         f"Δv matrix computed: shape={delta_v_matrix.shape}, "
@@ -370,13 +386,22 @@ if __name__ == "__main__":
     # Time of flight: quarter orbit
     t = (2.0 * np.pi / n) / 4.0        # ≈ π/2
 
-    dv, v0 = cw.compute_delta_v(r0, rf, t)
+    dv, v0, vf = cw.compute_delta_v(r0, rf, t)
     rf_check, _ = cw.compute_final_velocity(r0, v0, t)
 
-    print(f"\nInitial position  : {r0}")
-    print(f"Target  position  : {rf}")
-    print(f"Time of flight    : {t:.4f} time-units")
-    print(f"Required velocity : {v0}")
-    print(f"Δv magnitude      : {dv:.6f}")
-    print(f"Propagated final  : {rf_check}   (should match target)")
-    print(f"Position error    : {np.linalg.norm(rf_check - rf):.2e}   (should be ~0)")
+    print(f"\nInitial position   : {r0}")
+    print(f"Target  position   : {rf}")
+    print(f"Time of flight     : {t:.4f} time-units")
+    print(f"Departure velocity : {v0}")
+    print(f"Arrival  velocity  : {vf}")
+    print(f"Δv departure       : {np.linalg.norm(v0):.6f}")
+    print(f"Δv arrival (brake) : {np.linalg.norm(vf):.6f}")
+    print(f"Δv total           : {dv:.6f}")
+    print(f"Propagated final   : {rf_check}   (should match target)")
+    print(f"Position error     : {np.linalg.norm(rf_check - rf):.2e}   (should be ~0)")
+
+    # ── Singularity test ────────────────────────────────────────────────────
+    print("\n--- Singularity test (t = π/n, i.e. half orbital period) ---")
+    t_singular = np.pi / n
+    dv_s, v0_s, vf_s = cw.compute_delta_v(r0, rf, t_singular)
+    print(f"Δv at t=π/n : {dv_s}   (should be inf)")
