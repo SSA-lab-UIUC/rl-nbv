@@ -18,8 +18,8 @@ from envs.state_transition import (
     get_lit_visible_points,
     orchestrate_step,
     update_coverage_map,
+    compute_delta_v_matrix,
 )
-from envs.state_transition.cw_utils import compute_delta_v_matrix
 import logging
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
