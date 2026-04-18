@@ -586,7 +586,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         # ========================================================================
         # STEP 1: CALCULATE BASE COVERAGE REWARD
         # ========================================================================
-        if self.is_reward_with_cur_coverage == True:
+        if self.is_reward_with_cur_coverage:
             # Reward based on current coverage progress
             if self.step_cnt < 4:
                 coverage_reward = cover_add * 10
