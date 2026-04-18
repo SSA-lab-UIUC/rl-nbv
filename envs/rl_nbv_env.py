@@ -18,6 +18,7 @@ from envs.state_transition import (
     get_lit_visible_points,
     orchestrate_step,
     update_coverage_map,
+    compute_delta_v_matrix,
 )
 import logging
 
@@ -74,6 +75,8 @@ class PointCloudNextBestViewEnv(gym.Env):
         is_reward_with_cur_coverage=False,
         cur_coverage_ratio=1.0,
         time_cost_weight=1.0,
+        fuel_budget=50.0,
+        delta_v_weight=1.0,
         sun_position_config=None,
     ):
         """
@@ -91,6 +94,9 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.is_reward_with_cur_coverage = is_reward_with_cur_coverage
         self.cur_coverage_ratio = cur_coverage_ratio
         self.time_cost_weight = time_cost_weight
+        self.delta_v_weight = delta_v_weight
+        self.fuel_budget = fuel_budget
+        self.cumulative_dv = 0.0
         self.sun_position_config = sun_position_config or {}
         self.terminated_coverage = terminated_coverage
         self.action_space = spaces.Discrete(view_num)
@@ -216,12 +222,27 @@ class PointCloudNextBestViewEnv(gym.Env):
             self.travel_times = compute_all_travel_times(
                 self.viewpoints, self.orbit_config
             )
+            self.max_travel_time = max(float(np.max(self.travel_times)), 1e-12)
             self.logger.info(
                 f"Precomputed travel times matrix shape: {self.travel_times.shape}"
             )
         else:
             self.travel_times = None
+            self.max_travel_time = 1.0
             self.logger.warning("Travel times not computed (viewpoints unavailable)")
+
+        if self.viewpoints is not None and self.travel_times is not None:
+            self.delta_v_matrix = compute_delta_v_matrix(
+                viewpoints=self.viewpoints,
+                travel_times=self.travel_times,
+                orbit_radius=self.orbit_config.orbit_radius,
+                mean_motion=self.orbit_config.mean_motion,
+            )
+            self.max_delta_v = max(float(np.max(self.delta_v_matrix)), 1e-12)
+        else:
+            raise ValueError(
+                "Delta-V matrix cannot be computed without viewpoints and travel times"
+            )
 
         # Current mission time (starts at 0.0, increments as agent moves)
         self.current_time = 0.0
@@ -375,6 +396,11 @@ class PointCloudNextBestViewEnv(gym.Env):
         action = int(action)
         previous_state = self._transition_state
         was_visited = bool(previous_state["views"][action])
+        prev_view = int(previous_state["_current_view"])
+
+        delta_v = 0.0
+        if self.delta_v_matrix is not None:
+            delta_v = float(self.delta_v_matrix[prev_view, action])
 
         step_result = orchestrate_step(
             action=action,
@@ -408,12 +434,21 @@ class PointCloudNextBestViewEnv(gym.Env):
         self._sync_legacy_coverage_buffers()
         self.action_history.append(action)
         self.step_cnt += 1
+        self.cumulative_dv += delta_v
 
         observation = self._get_observation_space()
         terminated = self._get_terminated()
         info = self._get_info()
 
+        reward = self._get_reward(
+            cover_add=self.coverage_add,
+            action=action,
+            travel_time=step_result.travel_time,
+            delta_v=delta_v,
+        )
+
         info["travel_time"] = step_result.travel_time
+        info["delta_v"] = delta_v
         info["mission_time"] = self.current_time
         info["mission_time_horizon"] = self.orbit_config.total_time
         info["reward_breakdown"] = step_result.reward_breakdown
@@ -438,7 +473,7 @@ class PointCloudNextBestViewEnv(gym.Env):
                 terminated,
             )
         )
-        return observation, step_result.reward, terminated, info
+        return observation, reward, terminated, info
 
     # for greedy policy test
     def try_step(self, action):
@@ -507,6 +542,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         )
 
         self._initialize_state_transition_for_current_model(self.current_view)
+        self.cumulative_dv = 0.0
 
         observation = self._get_observation_space()
         info = self._get_info()
@@ -528,11 +564,11 @@ class PointCloudNextBestViewEnv(gym.Env):
         self._sync_legacy_coverage_buffers()
         return coverage
 
-    def _get_reward(self, cover_add, action, travel_time=0.0):
+    def _get_reward(self, cover_add, action, travel_time=0.0, delta_v=0.0):
         """
         Calculate reward combining coverage gain and travel time cost.
 
-        Reward = coverage_reward - time_cost_weight * travel_time
+        Reward = coverage_reward - time_cost_weight * travel_time - delta_v_weight * delta_v
 
         This encourages agent to:
         1. Maximize new coverage observation
@@ -550,7 +586,7 @@ class PointCloudNextBestViewEnv(gym.Env):
         # ========================================================================
         # STEP 1: CALCULATE BASE COVERAGE REWARD
         # ========================================================================
-        if self.is_reward_with_cur_coverage == True:
+        if self.is_reward_with_cur_coverage:
             # Reward based on current coverage progress
             if self.step_cnt < 4:
                 coverage_reward = cover_add * 10
@@ -587,12 +623,15 @@ class PointCloudNextBestViewEnv(gym.Env):
         #
         # Agent learns to balance:
         # coverage_reward / travel_time = efficiency
-        time_penalty = self.time_cost_weight * travel_time
-        final_reward = coverage_reward - time_penalty
+        normalized_travel_time = travel_time * 10 / self.max_travel_time
+        normalized_delta_v = delta_v * 10 / self.max_delta_v
+        time_penalty = self.time_cost_weight * normalized_travel_time
+        fuel_penalty = self.delta_v_weight * normalized_delta_v
+        final_reward = coverage_reward - time_penalty - fuel_penalty
 
         self.logger.debug(
             f"[REWARD] action={action:2d}, coverage_reward={coverage_reward:7.4f}, "
-            f"time_penalty={time_penalty:7.4f}, final={final_reward:7.4f}"
+            f"time_penalty={time_penalty:7.4f}, fuel_penalty={fuel_penalty:7.4f}, final={final_reward:7.4f}"
         )
 
         return final_reward
@@ -626,6 +665,8 @@ class PointCloudNextBestViewEnv(gym.Env):
             return True
         if self.current_coverage >= self.terminated_coverage:
             return True
+        if self.cumulative_dv > self.fuel_budget:
+            return True
         return False
 
     def _get_info(self):
@@ -635,6 +676,9 @@ class PointCloudNextBestViewEnv(gym.Env):
             "current_coverage": self.current_coverage,
             "sun_position": self.current_sun_position.copy(),
             "mission_time": self.current_time,
+            "cumulative_dv": self.cumulative_dv,
+            "fuel_budget": self.fuel_budget,
+            "fuel_remaining": max(0.0, self.fuel_budget - self.cumulative_dv),
         }
 
     def _get_debug_info(self):
@@ -643,3 +687,6 @@ class PointCloudNextBestViewEnv(gym.Env):
                 self.model_name, self.action_history
             )
         )
+
+
+PointCloudNBVEnvLevel2 = PointCloudNextBestViewEnv

@@ -1,6 +1,7 @@
 """State transition module for orbital/target-based travel time calculations."""
 
 from .coverage import update_coverage_map, CoverageUpdateResult
+from .cw_utils import compute_delta_v_matrix
 from .orchestrator import orchestrate_step, StepResult
 from .reward import calculate_reward, RewardResult
 from .state_builder import build_state, State
@@ -32,4 +33,5 @@ __all__ = [
     "State",
     "orchestrate_step",
     "StepResult",
+    "compute_delta_v_matrix",
 ]
