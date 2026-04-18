@@ -623,8 +623,8 @@ class PointCloudNextBestViewEnv(gym.Env):
         #
         # Agent learns to balance:
         # coverage_reward / travel_time = efficiency
-        normalized_travel_time = travel_time / self.max_travel_time
-        normalized_delta_v = delta_v / self.max_delta_v
+        normalized_travel_time = travel_time * 10 / self.max_travel_time
+        normalized_delta_v = delta_v * 10 / self.max_delta_v
         time_penalty = self.time_cost_weight * normalized_travel_time
         fuel_penalty = self.delta_v_weight * normalized_delta_v
         final_reward = coverage_reward - time_penalty - fuel_penalty
