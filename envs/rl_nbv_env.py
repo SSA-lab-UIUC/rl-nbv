@@ -222,11 +222,13 @@ class PointCloudNextBestViewEnv(gym.Env):
             self.travel_times = compute_all_travel_times(
                 self.viewpoints, self.orbit_config
             )
+            self.max_travel_time = max(float(np.max(self.travel_times)), 1e-12)
             self.logger.info(
                 f"Precomputed travel times matrix shape: {self.travel_times.shape}"
             )
         else:
             self.travel_times = None
+            self.max_travel_time = 1.0
             self.logger.warning("Travel times not computed (viewpoints unavailable)")
 
         if self.viewpoints is not None and self.travel_times is not None:
@@ -236,8 +238,11 @@ class PointCloudNextBestViewEnv(gym.Env):
                 orbit_radius=self.orbit_config.orbit_radius,
                 mean_motion=self.orbit_config.mean_motion,
             )
+            self.max_delta_v = max(float(np.max(self.delta_v_matrix)), 1e-12)
         else:
-            self.delta_v_matrix = None
+            raise ValueError(
+                "Delta-V matrix cannot be computed without viewpoints and travel times"
+            )
 
         # Current mission time (starts at 0.0, increments as agent moves)
         self.current_time = 0.0
@@ -395,8 +400,7 @@ class PointCloudNextBestViewEnv(gym.Env):
 
         delta_v = 0.0
         if self.delta_v_matrix is not None:
-            raw_dv = float(self.delta_v_matrix[prev_view, action])
-            delta_v = raw_dv if np.isfinite(raw_dv) else self.fuel_budget
+            delta_v = float(self.delta_v_matrix[prev_view, action])
 
         step_result = orchestrate_step(
             action=action,
@@ -436,7 +440,12 @@ class PointCloudNextBestViewEnv(gym.Env):
         terminated = self._get_terminated()
         info = self._get_info()
 
-        reward = step_result.reward - (self.delta_v_weight * delta_v)
+        reward = self._get_reward(
+            cover_add=self.coverage_add,
+            action=action,
+            travel_time=step_result.travel_time,
+            delta_v=delta_v,
+        )
 
         info["travel_time"] = step_result.travel_time
         info["delta_v"] = delta_v
@@ -614,8 +623,10 @@ class PointCloudNextBestViewEnv(gym.Env):
         #
         # Agent learns to balance:
         # coverage_reward / travel_time = efficiency
-        time_penalty = self.time_cost_weight * travel_time
-        fuel_penalty = self.delta_v_weight * delta_v
+        normalized_travel_time = travel_time / self.max_travel_time
+        normalized_delta_v = delta_v / self.max_delta_v
+        time_penalty = self.time_cost_weight * normalized_travel_time
+        fuel_penalty = self.delta_v_weight * normalized_delta_v
         final_reward = coverage_reward - time_penalty - fuel_penalty
 
         self.logger.debug(
