@@ -7,6 +7,7 @@ import random
 import torch
 import sys
 import os
+from collections.abc import Mapping
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from distance.chamfer_distance import ChamferDistanceFunction
@@ -78,6 +79,8 @@ class PointCloudNextBestViewEnv(gym.Env):
         fuel_budget=50.0,
         delta_v_weight=1.0,
         sun_position_config=None,
+        target_orbit_config=None,
+        state_reward_config=None,
     ):
         """
         Initialize Point Cloud Next Best View Environment.
@@ -183,10 +186,15 @@ class PointCloudNextBestViewEnv(gym.Env):
         self.coverage_add = 0.0
         self.step_cnt = 1
         self.model_name = self.shapenet_reader.get_model_info()
+        if state_reward_config is None:
+            state_reward_config = {}
+        if not isinstance(state_reward_config, Mapping):
+            raise TypeError("state_reward_config must be a mapping")
         self.reward_config = {
             "revisit_penalty": -5.0,
             "coverage_coeff": 1.0,
         }
+        self.reward_config.update(dict(state_reward_config))
 
         # ============================================================================
         # TRAVEL TIME INITIALIZATION
@@ -212,8 +220,21 @@ class PointCloudNextBestViewEnv(gym.Env):
         # orbit_radius: 1.0 (unit sphere)
         # grav_param: 1.0 (dimensionless, controls orbital dynamics)
         # num_orbits: 2.0 (mission horizon = 2 complete orbits)
+        if target_orbit_config is None:
+            target_orbit_config = {}
+        if not isinstance(target_orbit_config, Mapping):
+            raise TypeError("target_orbit_config must be a mapping")
+
         self.orbit_config = TargetOrbitConfig(
-            orbit_radius=1.0, grav_param=1.0, num_orbits=2.0
+            orbit_radius=float(target_orbit_config.get("orbit_radius", 1.0)),
+            grav_param=float(target_orbit_config.get("grav_param", 1.0)),
+            num_orbits=float(target_orbit_config.get("num_orbits", 2.0)),
+        )
+        self.logger.info(
+            "TargetOrbitConfig from env config: orbit_radius=%.4f, grav_param=%.4f, num_orbits=%.4f",
+            self.orbit_config.orbit_radius,
+            self.orbit_config.grav_param,
+            self.orbit_config.num_orbits,
         )
 
         # Precompute travel times between all pairs of viewpoints
