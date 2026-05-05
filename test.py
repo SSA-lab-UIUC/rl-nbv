@@ -46,6 +46,7 @@ def config_to_args(config):
     env = config.get("environment", {})
     train = config.get("training", {})
     dqn = train.get("dqn", {})
+    ppo = train.get("ppo", {})
     pre = train.get("pretrained", {})
     rb = train.get("replay_buffer", {})
     out = train.get("output", {})
@@ -65,6 +66,8 @@ def config_to_args(config):
         "is_ratio_reward": train.get("is_ratio_reward", 1),
         "is_profile": train.get("is_profile", 0),
         "resume": train.get("resume", 0),
+        "continuous_mode": env.get("continuous_mode", False),
+        "algorithm": train.get("algorithm", "DQN"),
         "device": dqn.get("device", "cuda:0"),
         "learning_rate": dqn.get("learning_rate", 0.001),
         "batch_size": dqn.get("batch_size", 128),
@@ -227,20 +230,34 @@ if __name__ == "__main__":
         observation_space_dim=args.observation_space_dim,
         log_level=logging.INFO,
         sun_position_config=args.sun_position_config,
+        continuous_mode=args.continuous_mode,
     )
 
-    # Load trained DQN
-    policy_kwargs = dict(
-        features_extractor_class=models.pointnet2_cls_ssg.PointNetFeatureExtraction,
-        features_extractor_kwargs=dict(features_dim=128),
-        optimizer_class=optim.adamw.AdamW,
-    )
-    model = stable_baselines3.DQN.load(
-        path=args.final_model_path,
-        env=test_env,
-        policy_kwargs=policy_kwargs,
-        policy="MultiInputPolicy",
-    )
+    # Load trained model (DQN or PPO)
+    if args.algorithm == "PPO":
+        policy_kwargs = dict(
+            features_extractor_class=models.pointnet2_cls_ssg.PointNetFeatureExtractionContinuous,
+            features_extractor_kwargs=dict(features_dim=128),
+            optimizer_class=optim.adamw.AdamW,
+        )
+        model = stable_baselines3.PPO.load(
+            path=args.final_model_path,
+            env=test_env,
+            policy_kwargs=policy_kwargs,
+            policy="MultiInputPolicy",
+        )
+    else:
+        policy_kwargs = dict(
+            features_extractor_class=models.pointnet2_cls_ssg.PointNetFeatureExtraction,
+            features_extractor_kwargs=dict(features_dim=128),
+            optimizer_class=optim.adamw.AdamW,
+        )
+        model = stable_baselines3.DQN.load(
+            path=args.final_model_path,
+            env=test_env,
+            policy_kwargs=policy_kwargs,
+            policy="MultiInputPolicy",
+        )
 
     # ── STEP 1: Trained model ─────────────────────────────────────────────────
     logger.info("=" * 52)

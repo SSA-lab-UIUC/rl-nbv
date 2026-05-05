@@ -40,6 +40,15 @@ class NextBestViewCustomCallback(BaseCallback):
                 os.makedirs(os.path.dirname(self.output_file) or ".", exist_ok=True)
             except Exception:
                 pass
+        
+        # Detect mode from environment
+        if hasattr(self.model.get_env(), 'envs'):
+            # VecEnv
+            self.continuous_mode = self.model.get_env().envs[0].continuous_mode
+        else:
+            # Single env
+            self.continuous_mode = self.model.get_env().continuous_mode
+        
         if not self.check_replay_buffer:
             return
         self.model.replay_buffer.sample(32, env=self.model._vec_normalize_env)
@@ -112,6 +121,12 @@ class NextBestViewCustomCallback(BaseCallback):
                 f.write("\n")
 
     def _caculate_average_coverage(self):
+        if self.continuous_mode:
+            return self._evaluate_continuous()
+        else:
+            return self._evaluate_discrete()
+
+    def _evaluate_discrete(self):
         model_size = self.test_env.shapenet_reader.model_num
         init_step = 0
         average_coverage = np.zeros(self.step_size)
@@ -188,3 +203,31 @@ class NextBestViewCustomCallback(BaseCallback):
                 )
 
         return average_coverage[self.step_size - 1]
+
+    def _evaluate_continuous(self):
+        """Evaluation for continuous mode."""
+        model_size = self.test_env.shapenet_reader.model_num
+        coverages = []
+        
+        for model_id in range(model_size):
+            obs = self.test_env.reset()
+            episode_coverage = []
+            
+            for step_id in range(self.step_size):
+                action, _states = self.model.predict(obs, deterministic=True)
+                obs, rewards, dones, info = self.test_env.step(action)
+                episode_coverage.append(info["current_coverage"])
+                if dones:
+                    break
+            
+            coverages.append(max(episode_coverage) if episode_coverage else 0.0)
+        
+        avg_coverage = np.mean(coverages) * 100
+        
+        with open(self.output_file, "a+", encoding="utf-8") as f:
+            f.write("average_coverage: {:.2f}%\n".format(avg_coverage))
+        
+        if self.verbose >= 1:
+            print("[Eval] average_coverage: {:.2f}%".format(avg_coverage))
+        
+        return avg_coverage
