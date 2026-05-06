@@ -85,12 +85,19 @@ def config_to_args(config):
     env = config.get("environment", {})
     train = config.get("training", {})
     dqn = train.get("dqn", {})
+    ppo = train.get("ppo", {})
     pre = train.get("pretrained", {})
     rb = train.get("replay_buffer", {})
     out = train.get("output", {})
     log = train.get("logging", {})
 
-    return {
+    # Add algorithm selection
+    algorithm = train.get("algorithm", "DQN")  # Default to DQN
+    
+    # Add continuous mode config
+    continuous_mode = env.get("continuous_mode", False)
+    
+    args = {
         # Dataset
         "train_data_path": ds.get("train_data_path"),
         "verify_data_path": ds.get("verify_data_path"),
@@ -114,10 +121,14 @@ def config_to_args(config):
         "env_num": env.get("env_num", 8),
         "viewpoints_path": env["viewpoints_path"],
         "sun_position_config": env.get("sun_position", {}),
+        # NEW: Continuous mode parameter
+        "continuous_mode": continuous_mode,
         # Training
         "step_size": train.get("step_size", 10),
         "is_profile": train.get("is_profile", 0),
         "resume": train.get("resume", 0),
+        # NEW: Algorithm selection
+        "algorithm": algorithm,
         # DQN
         "device": dqn.get("device", "cuda:0"),
         "learning_rate": dqn.get("learning_rate", 0.001),
@@ -130,6 +141,18 @@ def config_to_args(config):
         "train_freq": dqn.get("train_freq", 16),
         "gamma": dqn.get("gamma", 0.1),
         "total_steps": dqn.get("total_steps", 500000),
+        # NEW: PPO config
+        "ppo_learning_rate": ppo.get("learning_rate", 3e-4),
+        "ppo_n_steps": ppo.get("n_steps", 2048),
+        "ppo_batch_size": ppo.get("batch_size", 256),
+        "ppo_n_epochs": ppo.get("n_epochs", 10),
+        "ppo_gamma": ppo.get("gamma", 0.99),
+        "ppo_gae_lambda": ppo.get("gae_lambda", 0.95),
+        "ppo_clip_range": ppo.get("clip_range", 0.2),
+        "ppo_ent_coef": ppo.get("ent_coef", 0.01),
+        "ppo_vf_coef": ppo.get("vf_coef", 0.5),
+        "ppo_max_grad_norm": ppo.get("max_grad_norm", 0.5),
+        "ppo_total_steps": ppo.get("total_steps", 1000000),
         # Pretrained
         "is_transform": pre.get("is_transform", 0),
         "pretrained_model_path": pre.get("model_path", "null"),
@@ -154,6 +177,8 @@ def config_to_args(config):
         "coverage_log_freq_profile": log.get("coverage_log_freq_profile"),
         "progress_log_interval": log.get("progress_log_interval", 10),
     }
+    
+    return args
 
 
 # ============================================================================
@@ -325,6 +350,7 @@ def make_env(data_path, env_id, logger_name, log_file, args):
             sun_position_config=args.sun_position_config,
             target_orbit_config=args.target_orbit_config,
             state_reward_config=args.state_reward_config,
+            continuous_mode=args.continuous_mode,
         )
         return env
 
@@ -543,7 +569,9 @@ if __name__ == "__main__":
             if args.coverage_log_freq_profile is not None
             else 200
         )
-    total_steps = args.total_steps if args.is_profile == 0 else 2000
+    total_steps = args.ppo_total_steps if args.algorithm == "PPO" else args.total_steps
+    if args.is_profile == 1:
+        total_steps = 2000
     logger.info("Total steps       : {}".format(total_steps))
     logger.info("Coverage log freq (eval) : {}".format(coverage_log_freq))
 
@@ -603,6 +631,7 @@ if __name__ == "__main__":
         sun_position_config=args.sun_position_config,
         target_orbit_config=args.target_orbit_config,
         state_reward_config=args.state_reward_config,
+        continuous_mode=args.continuous_mode,
     )
     test_env = envs.rl_nbv_env.PointCloudNextBestViewEnv(
         data_path=args.test_data_path,
@@ -623,16 +652,27 @@ if __name__ == "__main__":
         sun_position_config=args.sun_position_config,
         target_orbit_config=args.target_orbit_config,
         state_reward_config=args.state_reward_config,
+        continuous_mode=args.continuous_mode,
     )
     logger.info("Environments ready ✅")
     log_gpu_memory(logger, tag="[after envs]")
 
     # ── Policy ────────────────────────────────────────────────────────────────
-    policy_kwargs = dict(
-        features_extractor_class=models.pointnet2_cls_ssg.PointNetFeatureExtraction,
-        features_extractor_kwargs=dict(features_dim=128),
-        optimizer_class=optim.adamw.AdamW,
-    )
+    if args.algorithm == "PPO":
+        # PPO for continuous control
+        policy_kwargs = dict(
+            features_extractor_class=models.pointnet2_cls_ssg.PointNetFeatureExtractionContinuous,
+            features_extractor_kwargs=dict(features_dim=128),
+            net_arch=dict(pi=[256, 128], vf=[256, 128]),
+            optimizer_class=optim.adamw.AdamW,
+        )
+    else:
+        # DQN for discrete control
+        policy_kwargs = dict(
+            features_extractor_class=models.pointnet2_cls_ssg.PointNetFeatureExtraction,
+            features_extractor_kwargs=dict(features_dim=128),
+            optimizer_class=optim.adamw.AdamW,
+        )
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = None
@@ -643,24 +683,45 @@ if __name__ == "__main__":
             logger.warning("No checkpoint — starting fresh")
 
     if model is None:
-        logger.info("Creating new DQN model...")
-        model = stable_baselines3.DQN(
-            policy="MultiInputPolicy",
-            env=train_env,
-            policy_kwargs=policy_kwargs,
-            verbose=1,
-            device=args.device,
-            learning_starts=args.learning_starts,
-            batch_size=args.batch_size,
-            buffer_size=args.buffer_size,
-            exploration_fraction=args.exploration_fraction,
-            exploration_final_eps=args.exploration_final_eps,
-            gradient_steps=args.gradient_steps,
-            learning_rate=linear_schedule(args.learning_rate),
-            train_freq=args.train_freq,
-            gamma=args.gamma,
-        )
-        logger.info("DQN model created ✅")
+        if args.algorithm == "PPO":
+            logger.info("Creating new PPO model...")
+            model = stable_baselines3.PPO(
+                policy="MultiInputPolicy",
+                env=train_env,
+                policy_kwargs=policy_kwargs,
+                learning_rate=linear_schedule(args.ppo_learning_rate),
+                n_steps=args.ppo_n_steps,
+                batch_size=args.ppo_batch_size,
+                n_epochs=args.ppo_n_epochs,
+                gamma=args.ppo_gamma,
+                gae_lambda=args.ppo_gae_lambda,
+                clip_range=args.ppo_clip_range,
+                ent_coef=args.ppo_ent_coef,
+                vf_coef=args.ppo_vf_coef,
+                max_grad_norm=args.ppo_max_grad_norm,
+                verbose=1,
+                device=args.device,
+            )
+            logger.info("PPO model created ✅")
+        else:
+            logger.info("Creating new DQN model...")
+            model = stable_baselines3.DQN(
+                policy="MultiInputPolicy",
+                env=train_env,
+                policy_kwargs=policy_kwargs,
+                verbose=1,
+                device=args.device,
+                learning_starts=args.learning_starts,
+                batch_size=args.batch_size,
+                buffer_size=args.buffer_size,
+                exploration_fraction=args.exploration_fraction,
+                exploration_final_eps=args.exploration_final_eps,
+                gradient_steps=args.gradient_steps,
+                learning_rate=linear_schedule(args.learning_rate),
+                train_freq=args.train_freq,
+                gamma=args.gamma,
+            )
+            logger.info("DQN model created ✅")
 
     log_gpu_memory(logger, tag="[after model]")
 

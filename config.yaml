@@ -17,7 +17,7 @@ environment:
   observation_space_dim: 1024
   is_normalize: 1
   terminated_coverage: 0.97
-  max_step: 11
+  max_step: 30  # Increased for continuous episodes
   is_ratio_reward: 1
   is_reward_with_cur_coverage: 0
   cur_coverage_ratio: 1.0
@@ -39,6 +39,8 @@ environment:
       angular_velocity_rad_per_s: 0.0
       initial_phase_rad: 0.0
       time_offset_s: 0.0
+  # Continuous mode parameter
+  continuous_mode: false  # Set to true for continuous control
 
 # Training
 training:
@@ -46,8 +48,9 @@ training:
   is_ratio_reward: 1
   is_profile: 0
   resume: 1
+  algorithm: DQN  # Options: DQN (discrete) or PPO (continuous)
 
-  # DQN Hyperparameters
+  # DQN Hyperparameters (used when algorithm: DQN)
   dqn:
     device: cuda:0
     learning_rate: 0.001
@@ -60,6 +63,21 @@ training:
     train_freq: 16
     gamma: 0.1
     total_steps: 500000
+
+  # PPO Hyperparameters (used when algorithm: PPO)
+  ppo:
+    device: cuda:0
+    learning_rate: 0.0003
+    n_steps: 2048
+    batch_size: 256
+    n_epochs: 10
+    gamma: 0.99
+    gae_lambda: 0.95
+    clip_range: 0.2
+    ent_coef: 0.01
+    vf_coef: 0.5
+    max_grad_norm: 0.5
+    total_steps: 1000000
 
   # Pretrained PointNet
   pretrained:
